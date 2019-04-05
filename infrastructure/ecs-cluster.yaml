@@ -1,285 +1,130 @@
 Description: >
-    This template deploys an ECS cluster to the provided VPC and subnets
-    using an Auto Scaling Group
+
+  Deploys a highly available ECS cluster using an AutoScaling Group,
+  with ECS hosts distributed across multiple Availability Zones.
+
+  2 zones were chosen because it's the min to be highly-available
 
 Parameters:
+  NestedStacksS3Bucket:
+    Description: The name of the versioned S3 bucket you created to hold nested stack temlpates
+    Type: String
+    Default: cf.clearskyconsultingllc.com
 
-    EnvironmentName:
-        Description: An environment name that will be prefixed to resource names
-        Type: String
+  InstanceType:
+    Description: Which instance type should we use to build the ECS cluster?
+    Type: String
+    Default: t3.nano
 
-    InstanceType:
-        Description: Which instance type should we use to build the ECS cluster?
-        Type: String
-        Default: c4.large
+  ClusterSize:
+    Description: How many ECS hosts do you want to initially deploy?
+    Type: Number
+    Default: 0
 
-    ClusterSize:
-        Description: How many ECS hosts do you want to initially deploy?
-        Type: Number
-        Default: 2
+  ClusterMinSize:
+    Description: Minimum number of ECS hosts to keep around?
+    Type: Number
+    Default: 0
 
-    VPC:
-        Description: Choose which VPC this ECS cluster should be deployed to
-        Type: AWS::EC2::VPC::Id
+  ClusterMaxSize:
+    Description: Maximum number of ECS hosts to have?
+    Type: Number
+    Default: 0
 
-    Subnets:
-        Description: Choose which subnets this ECS cluster should be deployed to
-        Type: List<AWS::EC2::Subnet::Id>
+  ECSImageId:
+    Description: The AMI ID to use for the ECS instances http://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-optimized_AMI.html
+    Type: String
+    Default: ami-007571470797b8ffa
 
-    SecurityGroup:
-        Description: Select the Security Group to use for the ECS cluster hosts
-        Type: AWS::EC2::SecurityGroup::Id
+  VpcId:
+    Description: The VPC to run the cluster in
+    Type: AWS::EC2::VPC::Id
 
-Mappings:
+  PrivateSubnetIds:
+    Description: The private subnets to create the cluster in
+    Type: List<AWS::EC2::Subnet::Id>
 
-    # These are the latest ECS optimized AMIs as of Feb 21 2018:
+
+Mappings: 
+  NestedStacks: 
+    infrastructure: 
+      "secgroups": "security-groups/ecs-in-vpc.yaml?versionid=G7VzT8y3y0IV3QGR.tLVtU9265kv9Fm3"  
+      "ecscluster": "ecs/cluster-in-vpc.yaml?versionid=nVCKRybSZ_pimewVOSmDkG0LqiHz0Xyj"
+    # These are the latest ECS optimized AMIs as of 4/5/2019:
     #
     #   amzn-ami-2017.09.i-amazon-ecs-optimized
-    #   ECS agent:    1.17.1
-    #   Docker:       17.09.1-ce
-    #   ecs-init:     1.17.1-1
+    #   ECS agent:    1.26.0
+    #   Docker:       18.06.1-ce
+    #   ecs-init:     1.26.0-1
     #
     # You can find the latest available on this page of our documentation:
     # http://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-optimized_AMI.html
     # (note the AMI identifier is region specific)
 
     AWSRegionToAMI:
+        us-east-2:
+            AMI: ami-0aa9ee1fc70e57450
         us-east-1:
-            AMI: ami-a7a242da
+            AMI: ami-007571470797b8ffa
+        us-west-2:
+            AMI: ami-0302f3ec240b9d23c
+        us-west-1:
+            AMI: ami-0935a5e8655c6d896
         # visit doc above to add more regions
 
+Conditions:
+  ClusterSizeNotZero: !Not [ !Equals [ !Ref ClusterSize, 0 ] ]
+
 Resources:
+  SecurityGroups:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 
+        - https://s3.${AWS::Region}.amazonaws.com/${NestedStacksS3Bucket}/nested-stacks/${url}
+        - { url: !FindInMap [NestedStacks, infrastructure, secgroups] }
 
-    ECSCluster:
-        Type: AWS::ECS::Cluster
-        Properties:
-            ClusterName: !Ref EnvironmentName
+        # https://s3.amazonaws.com/cf.yourdomain.com/infrastructure/security-groups.yaml?versionid=BWH8JIRBkP.LggGolE1d6lqUO1_UnQGt
+      Parameters:
+        EnvironmentName: !Ref AWS::StackName
+        VPC: !Ref VpcId
+  ECS:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 
+        - https://s3.${AWS::Region}.amazonaws.com/${NestedStacksS3Bucket}/nested-stacks/${url}
+        - { url: !FindInMap [NestedStacks, infrastructure, ecscluster] }
 
-    ECSAutoScalingGroup:
-        Type: AWS::AutoScaling::AutoScalingGroup
-        Properties:
-            VPCZoneIdentifier: !Ref Subnets
-            LaunchConfigurationName: !Ref ECSLaunchConfiguration
-            MinSize: !Ref ClusterSize
-            MaxSize: !Ref ClusterSize
-            DesiredCapacity: !Ref ClusterSize
-            Tags:
-                - Key: Name
-                  Value: !Sub ${EnvironmentName} ECS host
-                  PropagateAtLaunch: true
-        CreationPolicy:
-            ResourceSignal:
-                Timeout: PT15M
-        UpdatePolicy:
-            AutoScalingRollingUpdate:
-                MinInstancesInService: 1
-                MaxBatchSize: 1
-                PauseTime: PT15M
-                SuspendProcesses:
-                  - HealthCheck
-                  - ReplaceUnhealthy
-                  - AZRebalance
-                  - AlarmNotification
-                  - ScheduledActions
-                WaitOnResourceSignals: true
+        # https://s3.amazonaws.com/cf.yourdomain.com/infrastructure/ecs-cluster.yaml?versionid=a7EedtHDRl1jpwm4IWcjdbacOQeBZuUp
+      Parameters:
+        EnvironmentName: !Ref AWS::StackName
+        InstanceType: !Ref InstanceType
+        ClusterMinSize: !Ref ClusterMinSize
+        ClusterSize: !Ref ClusterSize
+        ClusterMaxSize: !Ref ClusterMaxSize
+        VPC: !Ref VpcId
+        SecurityGroup: !GetAtt SecurityGroups.Outputs.ECSHostSecurityGroup
+        Subnets: !Ref PrivateSubnetIds
+        ECSImageId: !FindInMap [AWSRegionToAMI, !Ref "AWS::Region", AMI]
 
-    ECSLaunchConfiguration:
-        Type: AWS::AutoScaling::LaunchConfiguration
-        Properties:
-            ImageId:  !FindInMap [AWSRegionToAMI, !Ref "AWS::Region", AMI]
-            InstanceType: !Ref InstanceType
-            SecurityGroups:
-                - !Ref SecurityGroup
-            IamInstanceProfile: !Ref ECSInstanceProfile
-            UserData:
-                "Fn::Base64": !Sub |
-                    #!/bin/bash
-                    yum install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
-                    yum install -y aws-cfn-bootstrap
-                    /opt/aws/bin/cfn-init -v --region ${AWS::Region} --stack ${AWS::StackName} --resource ECSLaunchConfiguration
-                    /opt/aws/bin/cfn-signal -e $? --region ${AWS::Region} --stack ${AWS::StackName} --resource ECSAutoScalingGroup
+  CPUReservationScaleUpPolicy:
+      Type: AWS::AutoScaling::ScalingPolicy
+      Condition: ClusterSizeNotZero
+      Properties:
+        AdjustmentType: ChangeInCapacity
+        AutoScalingGroupName: !GetAtt ECS.Outputs.ECSAutoScalingGroup
+        Cooldown: '1800'
+        ScalingAdjustment: '1'
 
-        Metadata:
-            AWS::CloudFormation::Init:
-                config:
-                    packages:
-                        yum:
-                            awslogs: []
-
-                    commands:
-                        01_add_instance_to_cluster:
-                            command: !Sub echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
-                    files:
-                        "/etc/cfn/cfn-hup.conf":
-                            mode: 000400
-                            owner: root
-                            group: root
-                            content: !Sub |
-                                [main]
-                                stack=${AWS::StackId}
-                                region=${AWS::Region}
-
-                        "/etc/cfn/hooks.d/cfn-auto-reloader.conf":
-                            content: !Sub |
-                                [cfn-auto-reloader-hook]
-                                triggers=post.update
-                                path=Resources.ECSLaunchConfiguration.Metadata.AWS::CloudFormation::Init
-                                action=/opt/aws/bin/cfn-init -v --region ${AWS::Region} --stack ${AWS::StackName} --resource ECSLaunchConfiguration
-
-                    services:
-
-                        "/etc/awslogs/awscli.conf":
-                            content: !Sub |
-                                [plugins]
-                                cwlogs = cwlogs
-                                [default]
-                                region = ${AWS::Region}
-
-                        "/etc/awslogs/awslogs.conf":
-                            content: !Sub |
-                                [general]
-                                state_file = /var/lib/awslogs/agent-state
-
-                                [/var/log/dmesg]
-                                file = /var/log/dmesg
-                                log_group_name = ${ECSCluster}-/var/log/dmesg
-                                log_stream_name = ${ECSCluster}
-
-                                [/var/log/messages]
-                                file = /var/log/messages
-                                log_group_name = ${ECSCluster}-/var/log/messages
-                                log_stream_name = ${ECSCluster}
-                                datetime_format = %b %d %H:%M:%S
-
-                                [/var/log/docker]
-                                file = /var/log/docker
-                                log_group_name = ${ECSCluster}-/var/log/docker
-                                log_stream_name = ${ECSCluster}
-                                datetime_format = %Y-%m-%dT%H:%M:%S.%f
-
-                                [/var/log/ecs/ecs-init.log]
-                                file = /var/log/ecs/ecs-init.log.*
-                                log_group_name = ${ECSCluster}-/var/log/ecs/ecs-init.log
-                                log_stream_name = ${ECSCluster}
-                                datetime_format = %Y-%m-%dT%H:%M:%SZ
-
-                                [/var/log/ecs/ecs-agent.log]
-                                file = /var/log/ecs/ecs-agent.log.*
-                                log_group_name = ${ECSCluster}-/var/log/ecs/ecs-agent.log
-                                log_stream_name = ${ECSCluster}
-                                datetime_format = %Y-%m-%dT%H:%M:%SZ
-
-                                [/var/log/ecs/audit.log]
-                                file = /var/log/ecs/audit.log.*
-                                log_group_name = ${ECSCluster}-/var/log/ecs/audit.log
-                                log_stream_name = ${ECSCluster}
-                                datetime_format = %Y-%m-%dT%H:%M:%SZ
-
-                        sysvinit:
-                            cfn-hup:
-                                enabled: true
-                                ensureRunning: true
-                                files:
-                                    - /etc/cfn/cfn-hup.conf
-                                    - /etc/cfn/hooks.d/cfn-auto-reloader.conf
-                            awslogs:
-                                enabled: true
-                                ensureRunning: true
-                                files:
-                                    - /etc/awslogs/awslogs.conf
-                                    - /etc/awslogs/awscli.conf
-
-    # This IAM Role is attached to all of the ECS hosts. It is based on the default role
-    # published here:
-    # http://docs.aws.amazon.com/AmazonECS/latest/developerguide/instance_IAM_role.html
-    #
-    # You can add other IAM policy statements here to allow access from your ECS hosts
-    # to other AWS services. Please note that this role will be used by ALL containers
-    # running on the ECS host.
-
-    ECSRole:
-        Type: AWS::IAM::Role
-        Properties:
-            Path: /
-            RoleName: !Sub ${EnvironmentName}-ECSRole-${AWS::Region}
-            AssumeRolePolicyDocument: |
-                {
-                    "Statement": [{
-                        "Action": "sts:AssumeRole",
-                        "Effect": "Allow",
-                        "Principal": {
-                            "Service": "ec2.amazonaws.com"
-                        }
-                    }]
-                }
-            Policies:
-                - PolicyName: ecs-service
-                  PolicyDocument: |
-                    {
-                        "Statement": [{
-                            "Effect": "Allow",
-                            "Action": [
-                                "ecs:CreateCluster",
-                                "ecs:DeregisterContainerInstance",
-                                "ecs:DiscoverPollEndpoint",
-                                "ecs:Poll",
-                                "ecs:RegisterContainerInstance",
-                                "ecs:StartTelemetrySession",
-                                "ecs:Submit*",
-                                "logs:CreateLogStream",
-                                "logs:PutLogEvents",
-                                "ecr:BatchCheckLayerAvailability",
-                                "ecr:BatchGetImage",
-                                "ecr:GetDownloadUrlForLayer",
-                                "ecr:GetAuthorizationToken",
-                                "ssm:DescribeAssociation",
-                                "ssm:GetDeployablePatchSnapshotForInstance",
-                                "ssm:GetDocument",
-                                "ssm:GetManifest",
-                                "ssm:GetParameters",
-                                "ssm:ListAssociations",
-                                "ssm:ListInstanceAssociations",
-                                "ssm:PutInventory",
-                                "ssm:PutComplianceItems",
-                                "ssm:PutConfigurePackageResult",
-                                "ssm:UpdateAssociationStatus",
-                                "ssm:UpdateInstanceAssociationStatus",
-                                "ssm:UpdateInstanceInformation",
-                                "ec2messages:AcknowledgeMessage",
-                                "ec2messages:DeleteMessage",
-                                "ec2messages:FailMessage",
-                                "ec2messages:GetEndpoint",
-                                "ec2messages:GetMessages",
-                                "ec2messages:SendReply",
-                                "cloudwatch:PutMetricData",
-                                "ec2:DescribeInstanceStatus",
-                                "ds:CreateComputer",
-                                "ds:DescribeDirectories",
-                                "logs:CreateLogGroup",
-                                "logs:CreateLogStream",
-                                "logs:DescribeLogGroups",
-                                "logs:DescribeLogStreams",
-                                "logs:PutLogEvents",
-                                "s3:PutObject",
-                                "s3:GetObject",
-                                "s3:AbortMultipartUpload",
-                                "s3:ListMultipartUploadParts",
-                                "s3:ListBucket",
-                                "s3:ListBucketMultipartUploads"
-                            ],
-                            "Resource": "*"
-                        }]
-                    }
-
-    ECSInstanceProfile:
-        Type: AWS::IAM::InstanceProfile
-        Properties:
-            Path: /
-            Roles:
-                - !Ref ECSRole
+  CPUReservationScaleDownPolicy:
+      Type: AWS::AutoScaling::ScalingPolicy
+      Condition: ClusterSizeNotZero
+      Properties:
+        AdjustmentType: ChangeInCapacity
+        AutoScalingGroupName: !GetAtt ECS.Outputs.ECSAutoScalingGroup
+        Cooldown: '900'
+        ScalingAdjustment: '-1'
 
 Outputs:
-
-    Cluster:
-        Description: A reference to the ECS cluster
-        Value: !Ref ECSCluster
+  Version:
+    Description: ECS cluster in a VPC
+    Value: 1.0.0
