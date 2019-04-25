@@ -4,32 +4,10 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   Continous Delievery: Naming convention:<app>--<branch>--<service> This template
   builds an AWS CodePipeline pipeline that implements a continuous delivery release
-  process for AWS CloudFormation stacks. Push change to github and it will build
-  the code, then release it to test.  Once approvded in test, will release in
-  staging.  Once approved in staging, it will create
-  a changeset in prod.  Approve the changeset and it will deploy in prod.
+  process for deploying static websites to s3 into test/staging/prod folders in
+  an s3 bucket.
 
 Parameters:
-  RelCloudFormationTemplatePath:
-    Description: Path of the cloudformation template, relative to your codebase
-    Type: String
-    Default: aws/cloudformation/fargate-service-elb.yaml
-  TestCloudFormationTemplateParameters:
-    Description: Test stack - Relative JSON config file that contains parameters passed to RelCloudFormationTemplatePath CloudFormation
-    Type: String
-    Default: aws/cloudformation/parameters/test--fargate-service-parameters-codepipeline.json
-  StagingCloudFormationTemplateParameters:
-    Description: Staging stack - Relative JSON config file that contains parameters passed to RelCloudFormationTemplatePath CloudFormation
-    Type: String
-    Default: aws/cloudformation/parameters/staging--fargate-service-parameters-codepipeline.json
-  ProdCloudFormationTemplateParameters:
-    Description: Prod stack - Relative JSON config file that contains parameters passed to RelCloudFormationTemplatePath CloudFormation
-    Type: String
-    Default: aws/cloudformation/parameters/prod--fargate-service-parameters-codepipeline.json
-  BuildParameterOverrides:
-    Default: '{"ContainerImage":{"Fn::GetParam":["MyAppBuild","build.json","CodeImage"]}}'
-    Description: CloudFormation paramater overrides. build.json is exported from your buildspec.yaml
-    Type: String
   NotificationArn:
     Description: ARN to receive notifications for approvals
     Type: String
@@ -53,19 +31,15 @@ Parameters:
   CodeBuildImageTest:
     Description: Image for the CodeBuild container that runs linting and test cases.
     Type: String
-    Default: aws/codebuild/php:7.1
+    Default: aws/codebuild/nodejs:10.14.1
   CodeBuildImage:
     Description: Image for the CodeBuild container that builds the final app docker image.  See https://docs.aws.amazon.com/codebuild/latest/userguide/build-env-ref-available.html
     Type: String
-    Default: aws/codebuild/docker:18.09.0
-  CodeEntryPointFilePath:
-    Description: The path to the root of your source code base, relative to the project root
+    Default: aws/codebuild/nodejs:10.14.1
+  S3Bucket:
+    Description: The S3 bucket to deploy the code to
     Type: String
-    Default: webroot/index.php
-  RelDockerfilePath:
-    Description: Path to the Dockerfile to use for the build, relative to your CodeEntryPointFilePath
-    Type: String
-    Default: docker/Dockerfile.cakephp
+    Default: test--static.clearskyconsultingllc.com
   LintTestBuildSpecPath:
     Description: Path to the buildspec used to run testcases, relative to your codebase
     Type: String
@@ -73,21 +47,23 @@ Parameters:
   CodeBuildProjectBuildSpecPath:
     Description: Path to the buildspec used to build your app image, relative to your codebase
     Type: String
-    Default: aws/codebuild/build-docker-image.yaml   
+    Default: aws/codebuild/deploy-static.yaml
+  PublicPathTest:
+    Description: the public path from the vue.config.js file
+    Type: String
+    Default: /test
+  PublicPathStaging:
+    Description: the public path from the vue.config.js file
+    Type: String
+    Default: /staging
+  PublicPathProd:
+    Description: the public path from the vue.config.js file
+    Type: String
+    Default: /
 
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
-      - Label:
-          default: "CloudFormation Template Settings"
-        Parameters:
-          - RelCloudFormationTemplatePath
-      - Label:
-          default: "CloudFormation template parameters"
-        Parameters:
-          - TestCloudFormationTemplateParameters
-          - StagingCloudFormationTemplateParameters
-          - ProdCloudFormationTemplateParameters
       - Label:
           default: "Test cases and linting"
         Parameters:
@@ -98,9 +74,6 @@ Metadata:
           default: "Build"
         Parameters:
           - CodeBuildProjectBuildSpecPath
-          - CodeEntryPointFilePath
-          - RelDockerfilePath
-          - BuildParameterOverrides
           - CodeBuildImage
           - BuildTimeout
 
@@ -160,24 +133,20 @@ Resources:
         Type: LINUX_CONTAINER
         Image: !Ref CodeBuildImageTest
         EnvironmentVariables:
-          - Name: CODE_ENTRY_POINT_FILE_PATH
-            Value: !Ref CodeEntryPointFilePath
           - Name: AWS_DEFAULT_REGION
             Value: !Ref AWS::Region
           - Name: AWS_ACCOUNT_ID
             Value: !Ref AWS::AccountId
-          - Name: IMAGE_REPO_NAME
-            Value: !Join [ '/', [ !Select [ 0, !Split [ '--', !Ref 'AWS::StackName' ] ] , !Select [ 1, !Split [ '--', !Ref 'AWS::StackName' ] ] ] ]
       ServiceRole: !Ref CodeBuildRole
       Source:
         Type: CODEPIPELINE
         BuildSpec: !Ref LintTestBuildSpecPath
       TimeoutInMinutes: !Ref BuildTimeoutTest
 
-  CodeBuildProject:
+  CodeBuildProjectTest:
     Type: AWS::CodeBuild::Project
     Properties:
-      Name: !Ref 'AWS::StackName'
+      Name: !Join ['-', [!Ref 'AWS::StackName', 'test']]
       Artifacts:
         Type: CODEPIPELINE
       Environment:
@@ -186,16 +155,72 @@ Resources:
         Type: LINUX_CONTAINER
         Image: !Ref CodeBuildImage
         EnvironmentVariables:
-          - Name: CODE_ENTRY_POINT_FILE_PATH
-            Value: !Ref CodeEntryPointFilePath
-          - Name: DOCKERFILE_PATH
-            Value: !Ref RelDockerfilePath
           - Name: AWS_DEFAULT_REGION
             Value: !Ref AWS::Region
           - Name: AWS_ACCOUNT_ID
             Value: !Ref AWS::AccountId
-          - Name: IMAGE_REPO_NAME
-            Value: !Join [ '/', [ !Select [ 0, !Split [ '--', !Ref 'AWS::StackName' ] ] , !Select [ 1, !Split [ '--', !Ref 'AWS::StackName' ] ] ] ]
+          - Name: S3_BUCKET
+            Value: !Ref S3Bucket
+          - Name: MODE
+            Value: test
+          - Name: PUBLIC_PATH
+            Value: !Ref PublicPathTest
+      ServiceRole: !Ref CodeBuildRole
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Ref CodeBuildProjectBuildSpecPath
+      TimeoutInMinutes: !Ref BuildTimeout
+
+  CodeBuildProjectStaging:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Join ['-', [!Ref 'AWS::StackName', 'staging']]
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_LARGE
+        PrivilegedMode: true
+        Type: LINUX_CONTAINER
+        Image: !Ref CodeBuildImage
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: S3_BUCKET
+            Value: !Ref S3Bucket
+          - Name: MODE
+            Value: production
+          - Name: PUBLIC_PATH
+            Value: !Ref PublicPathStaging
+      ServiceRole: !Ref CodeBuildRole
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Ref CodeBuildProjectBuildSpecPath
+      TimeoutInMinutes: !Ref BuildTimeout
+
+  CodeBuildProjectProd:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Join ['-', [!Ref 'AWS::StackName', 'prod']]
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_LARGE
+        PrivilegedMode: true
+        Type: LINUX_CONTAINER
+        Image: !Ref CodeBuildImage
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: S3_BUCKET
+            Value: !Ref S3Bucket
+          - Name: MODE
+            Value: production
+          - Name: PUBLIC_PATH
+            Value: !Ref PublicPathProd
       ServiceRole: !Ref CodeBuildRole
       Source:
         Type: CODEPIPELINE
@@ -244,7 +269,7 @@ Resources:
               Configuration:
                 ProjectName: !Ref CodeBuildProjectTestcases
               RunOrder: 1             
-        - Name: Build
+        - Name: DeployTest
           Actions:
             - Name: CodeBuild
               InputArtifacts:
@@ -254,44 +279,9 @@ Resources:
                 Owner: AWS
                 Provider: CodeBuild
                 Version: '1'
-              OutputArtifacts:
-                - Name: MyAppBuild
               Configuration:
-                ProjectName: !Ref CodeBuildProject
+                ProjectName: !Ref CodeBuildProjectTest
               RunOrder: 1
-        - Name: Test
-          Actions:
-            - Name: TestStack
-              InputArtifacts:
-                - Name: MyApp
-                - Name: MyAppBuild
-              ActionTypeId:
-                Category: Deploy
-                Owner: AWS
-                Provider: CloudFormation
-                Version: '1'
-              RunOrder: 1
-              Configuration:
-                ActionMode: CHANGE_SET_REPLACE
-                RoleArn: !GetAtt CFNRole.Arn
-                Capabilities: CAPABILITY_IAM
-                StackName: !Join [ '--', [ 'test', !Ref 'AWS::StackName', 'gen' ] ]
-                ChangeSetName: ChangeSet
-                TemplatePath: !Sub "MyApp::${RelCloudFormationTemplatePath}"
-                TemplateConfiguration: !Sub "MyApp::${TestCloudFormationTemplateParameters}"
-                ParameterOverrides: !Ref BuildParameterOverrides
-            - Name: ExecuteChangeSet
-              ActionTypeId:
-                Category: Deploy
-                Owner: AWS
-                Provider: CloudFormation
-                Version: '1'
-              Configuration:
-                ActionMode: CHANGE_SET_EXECUTE
-                ChangeSetName: ChangeSet
-                RoleArn: !GetAtt CFNRole.Arn
-                StackName: !Join [ '--', [ 'test', !Ref 'AWS::StackName', 'gen' ] ]
-              RunOrder: 2
             - Name: ApproveTest
               ActionTypeId:
                 Category: Approval
@@ -300,40 +290,20 @@ Resources:
                 Version: '1'
               Configuration:
                 NotificationArn: !Ref NotificationArn
-              RunOrder: 3                   
-        - Name: Staging
+              RunOrder: 2
+        - Name: DeployStaging
           Actions:
-            - Name: StagingStack
+            - Name: CodeBuild
               InputArtifacts:
                 - Name: MyApp
-                - Name: MyAppBuild
               ActionTypeId:
-                Category: Deploy
+                Category: Build
                 Owner: AWS
-                Provider: CloudFormation
+                Provider: CodeBuild
                 Version: '1'
+              Configuration:
+                ProjectName: !Ref CodeBuildProjectStaging
               RunOrder: 1
-              Configuration:
-                ActionMode: CHANGE_SET_REPLACE
-                RoleArn: !GetAtt CFNRole.Arn
-                Capabilities: CAPABILITY_IAM
-                StackName: !Join [ '--', [ 'staging', !Ref 'AWS::StackName', 'gen' ] ]
-                ChangeSetName: ChangeSet
-                TemplatePath: !Sub "MyApp::${RelCloudFormationTemplatePath}"
-                TemplateConfiguration: !Sub "MyApp::${StagingCloudFormationTemplateParameters}"
-                ParameterOverrides: !Ref BuildParameterOverrides
-            - Name: ExecuteChangeSet
-              ActionTypeId:
-                Category: Deploy
-                Owner: AWS
-                Provider: CloudFormation
-                Version: '1'
-              Configuration:
-                ActionMode: CHANGE_SET_EXECUTE
-                ChangeSetName: ChangeSet
-                RoleArn: !GetAtt CFNRole.Arn
-                StackName: !Join [ '--', [ 'staging', !Ref 'AWS::StackName', 'gen' ] ]
-              RunOrder: 2
             - Name: ApproveStaging
               ActionTypeId:
                 Category: Approval
@@ -343,84 +313,19 @@ Resources:
               Configuration:
                 NotificationArn: !Ref NotificationArn
               RunOrder: 3
-        - Name: Prod
+        - Name: DeployProd
           Actions:
-            - Name: CreateChangeSet
-              ActionTypeId:
-                Category: Deploy
-                Owner: AWS
-                Provider: CloudFormation
-                Version: '1'
+            - Name: CodeBuild
               InputArtifacts:
                 - Name: MyApp
-                - Name: MyAppBuild
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
               Configuration:
-                ActionMode: CHANGE_SET_REPLACE
-                RoleArn: !GetAtt CFNRole.Arn
-                Capabilities: CAPABILITY_IAM
-                StackName: !Join [ '--', [ 'prod', !Ref 'AWS::StackName', 'gen' ] ]
-                ChangeSetName: ChangeSet
-                TemplatePath: !Sub "MyApp::${RelCloudFormationTemplatePath}"
-                TemplateConfiguration: !Sub "MyApp::${ProdCloudFormationTemplateParameters}"
-                ParameterOverrides: !Ref BuildParameterOverrides
+                ProjectName: !Ref CodeBuildProjectProd
               RunOrder: 1
-            - Name: ApproveChangeSet
-              ActionTypeId:
-                Category: Approval
-                Owner: AWS
-                Provider: Manual
-                Version: '1'
-              Configuration:
-                NotificationArn: !Ref NotificationArn
-                CustomData: !Sub 'A new change set was created for the prod-${AWS::StackName} stack. Do you want to implement the changes?'
-              RunOrder: 2
-            - Name: ExecuteChangeSet
-              ActionTypeId:
-                Category: Deploy
-                Owner: AWS
-                Provider: CloudFormation
-                Version: '1'
-              Configuration:
-                ActionMode: CHANGE_SET_EXECUTE
-                ChangeSetName: ChangeSet
-                RoleArn: !GetAtt CFNRole.Arn
-                StackName: !Join [ '--', [ 'prod', !Ref 'AWS::StackName', 'gen' ] ]
-              RunOrder: 3
-        - Name: DeleteStagingAndTest
-          Actions:
-          - Name: ApproveDeleteStagingAndTest
-            ActionTypeId:
-              Category: Approval
-              Owner: AWS
-              Provider: Manual
-              Version: '1'
-            Configuration:
-              NotificationArn: !Ref NotificationArn
-              CustomData: !Sub 'Delete staging and test?'
-            RunOrder: 1
-          - Name: DeleteTest
-            ActionTypeId:
-              Category: Deploy
-              Owner: AWS
-              Provider: CloudFormation
-              Version: '1'
-            Configuration:
-              ActionMode: DELETE_ONLY
-              RoleArn: !GetAtt CFNRole.Arn
-              StackName: !Join [ '--', [ 'test', !Ref 'AWS::StackName' ] ]
-            RunOrder: 2                 
-          - Name: DeleteStaging
-            ActionTypeId:
-              Category: Deploy
-              Owner: AWS
-              Provider: CloudFormation
-              Version: '1'
-            Configuration:
-              ActionMode: DELETE_ONLY
-              RoleArn: !GetAtt CFNRole.Arn
-              StackName: !Join [ '--', [ 'staging', !Ref 'AWS::StackName' ] ]
-            RunOrder: 3
-
   CFNRole:
     Type: AWS::IAM::Role
     Properties:

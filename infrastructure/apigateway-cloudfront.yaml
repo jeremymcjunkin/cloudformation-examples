@@ -1,0 +1,338 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description:
+  Creates an API Gateway with stages test/staging/prod as well as a
+  CloudFront Distribution for static websites in an S3 Bucket and
+  the API. It supports test/staging/prod stages.
+
+Parameters:  
+  S3BucketDomain:
+    Type: String
+    Description: S3 Bucket Website Domain, ex test--static.clearskyconsultingllc.com.s3-website-us-west-2.amazonaws.com
+    Default: test--static.clearskyconsultingllc.com.s3-website-us-west-2.amazonaws.com
+
+  AcmCertificateArn:
+    Description: The ARN of a certificate from AWS Certificate Manager (ACM).  This needs to be in us-east-1.
+    Type: String
+    Default: arn:aws:acm:us-east-1:884108878943:certificate/750012d3-1799-4bef-9fc7-2938ff6966da
+
+  CloudFrontCname:
+    Description: Custom domain name to use (foo.ncm.com)
+    Type: String
+    Default: chicago.clearskyconsultingllc.com
+
+  ProdPath:
+    Description: The path in the s3 bucket to the prod deployment.  You probably want this blank.
+    Type: String
+    Default: ''
+
+  CustomHeaderName:
+    Description: A custom header name that CloudFront will send to the ELB so you can verify requests come from CloudFront
+    Type: String
+    Default: FI-from-CF
+
+  CustomHeaderValue:
+    Description:  The value of the CustomerHeaderName that CloudFront will send to the ELB
+    Type: String
+    Default: 2137e8d2-e3f6-4dbc-b4b0-218b58f6cc55
+
+  TestStageName:
+    Description: The path to prefix to the test origin
+    Type: String
+    Default: test
+  
+  StagingStageName:
+    Description: The path to prefix to the staging origin
+    Type: String
+    Default: staging
+  
+  ProdStageName:
+    Description: The path to prefix to the prod origin
+    Type: String
+    Default: prod
+
+  SecurityPolicy:
+    Description: "The default minimum security policy: https://docs.aws.amazon.com/cloudfront/latest/APIReference/API_ViewerCertificate.html"
+    Type: String
+    Default: TLSv1.1_2016
+    AllowedValues: [ "SSLv3", "TLSv1", "TLSv1_2016", "TLSv1.1_2016", "TLSv1.2_2018"]
+
+  TestDomain:
+    Description: The domain name for the test ELB
+    Type: String
+    Default: test--chicago.clearskyconsultingllc.com
+  
+  StagingDomain:
+    Description: The domain name for the staging ELB
+    Type: String
+    Default: staging--chicago.clearskyconsultingllc.com
+
+  ProdDomain:
+    Description: The domain name for the prod ELB
+    Type: String
+    Default: prod--chicago.clearskyconsultingllc.com
+
+  
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "CloudFront Info"
+        Parameters:
+          - S3BucketDomain
+          - AcmCertificateArn          
+          - CloudFrontCname
+          - CustomerHeaderName
+          - CustomerHeaderValue
+          - ProdPath
+      - Label:
+          default: "API Gateway"
+        Parameters:
+          - TestDomain
+          - TestStageName
+          - StagingDomain
+          - StagingStageName
+          - ProdDomain
+          - ProdStageName
+
+Resources:  
+#### API Gateway
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Description: A proxy API gateway with test/staging/prod stages
+      Name: !Ref AWS::StackName
+  ApiGatewayProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: "{proxy+}"
+      RestApiId: !Ref ApiGateway
+  ApiGatewayProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      RequestParameters:
+        "method.request.path.proxy": true
+      Integration:
+        IntegrationHttpMethod: ANY
+        Type: HTTP_PROXY
+        Uri: "https://${stageVariables.WsDomain}/{proxy}"
+        RequestParameters:
+          "integration.request.path.proxy": "method.request.path.proxy"
+      ResourceId: !Ref ApiGatewayProxyResource
+      RestApiId: !Ref ApiGateway
+  ApiGatewayOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      RequestParameters:
+        "method.request.path.proxy": true
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Methods: "'DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+          ResponseTemplates:
+            application/json: ''
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'        
+      ResourceId: !Ref ApiGatewayProxyResource
+      RestApiId: !Ref ApiGateway
+      MethodResponses:
+      - StatusCode: 200
+        ResponseModels:
+          application/json: 'Empty'
+        ResponseParameters:
+          method.response.header.Access-Control-Allow-Headers: false
+          method.response.header.Access-Control-Allow-Methods: false
+          method.response.header.Access-Control-Allow-Origin: false
+  ApiGatewayTestDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: ApiGatewayProxyMethod
+    Properties:
+      Description: The test stage
+      RestApiId: !Ref ApiGateway
+      StageName: test
+      StageDescription:
+        Variables:
+          WsDomain: !Ref TestDomain
+  ApiGatewayStagingDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: ApiGatewayProxyMethod
+    Properties:
+      Description: The staging stage
+      RestApiId: !Ref ApiGateway
+      StageName: staging
+      StageDescription:
+        Variables:
+          WsDomain: !Ref StagingDomain
+  ApiGatewayProdDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: ApiGatewayProxyMethod
+    Properties:
+      Description: The prod stage
+      RestApiId: !Ref ApiGateway
+      StageName: prod
+      StageDescription:
+        Variables:
+          WsDomain: !Ref ProdDomain
+#### END API Gateway
+#### Cloudfront and DNS stuff
+  OriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub "Origin Access Identity for ${AWS::StackName}"
+  CloudFront:  
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        IPV6Enabled: true
+        HttpVersion: http2
+        Comment: !Join [ '--', [!Ref 'AWS::StackName', ' Cloud Front']]
+        Aliases: [!Ref CloudFrontCname]
+        ViewerCertificate:
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: !Ref SecurityPolicy
+        Origins:
+        - Id: S3BucketOrigin
+          DomainName: !Ref S3BucketDomain
+          CustomOriginConfig:
+            OriginProtocolPolicy: http-only
+        - Id: APIOriginTest
+          DomainName: !Sub [ "${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com", { ApiGateway: !Ref ApiGateway } ]
+          OriginPath: !Join ['', ['/', !Ref TestStageName] ]
+          CustomOriginConfig:
+            HTTPPort: 80
+            HTTPSPort: 443
+            OriginProtocolPolicy: https-only #API Gateway only support https
+          OriginCustomHeaders:
+            - HeaderName: !Ref CustomHeaderName
+              HeaderValue: !Ref CustomHeaderValue
+        - Id: APIOriginStaging
+          DomainName: !Sub [ "${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com", { ApiGateway: !Ref ApiGateway } ]
+          OriginPath: !Join ['', ['/', !Ref StagingStageName] ]
+          CustomOriginConfig:
+            HTTPPort: 80
+            HTTPSPort: 443
+            OriginProtocolPolicy: https-only #API Gateway only support https
+          OriginCustomHeaders:
+            - HeaderName: !Ref CustomHeaderName
+              HeaderValue: !Ref CustomHeaderValue
+        - Id: APIOriginProd
+          DomainName: !Sub [ "${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com", { ApiGateway: !Ref ApiGateway } ]
+          OriginPath: !Join ['', ['/', !Ref ProdStageName] ]
+          CustomOriginConfig:
+            HTTPPort: 80
+            HTTPSPort: 443
+            OriginProtocolPolicy: https-only #API Gateway only support https
+          OriginCustomHeaders:
+            - HeaderName: !Ref CustomHeaderName
+              HeaderValue: !Ref CustomHeaderValue
+        DefaultCacheBehavior:
+          AllowedMethods: ["GET", "HEAD", "OPTIONS"]
+          CachedMethods: ["GET", "HEAD", "OPTIONS"]
+          ForwardedValues:
+            QueryString: false
+          TargetOriginId: S3BucketOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          DefaultTTL: 0
+        CacheBehaviors:
+        - PathPattern: /test/*
+          TargetOriginId: S3BucketOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          ForwardedValues:
+            QueryString: false
+        - PathPattern: /staging/*
+          TargetOriginId: S3BucketOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          ForwardedValues:
+            QueryString: false
+        - PathPattern: /api/test/*
+          AllowedMethods: ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+          #cache only on get requests
+          CachedMethods: ["GET","HEAD","OPTIONS"]
+          TargetOriginId: APIOriginTest
+          ViewerProtocolPolicy: redirect-to-https #API Gateway only support https
+          ForwardedValues:
+            Headers: ["Accept", "Authorization", "Content-Type", "Referer"]
+            QueryString: true
+          Compress: true
+          DefaultTTL: 0
+        - PathPattern: /api/staging/*
+          AllowedMethods: ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+          #cache only on get requests
+          CachedMethods: ["GET","HEAD","OPTIONS"]
+          TargetOriginId: APIOriginStaging
+          ViewerProtocolPolicy: redirect-to-https #API Gateway only support https
+          ForwardedValues:
+            Headers: ["Accept", "Authorization", "Content-Type", "Referer"]
+            QueryString: true
+          Compress: true
+          DefaultTTL: 0
+        - PathPattern: /api/*
+          AllowedMethods: ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+          #cache only on get requests
+          CachedMethods: ["GET","HEAD","OPTIONS"]
+          TargetOriginId: APIOriginProd
+          ViewerProtocolPolicy: redirect-to-https #API Gateway only support https
+          ForwardedValues:
+            Headers: ["Accept", "Authorization", "Content-Type", "Referer"]
+            QueryString: true
+          Compress: true
+          DefaultTTL: 0
+        CustomErrorResponses:
+        - ErrorCachingMinTTL: 0
+          ErrorCode: 400
+        - ErrorCachingMinTTL: 1
+          ErrorCode: 403
+        - ErrorCachingMinTTL: 5
+          ErrorCode: 500
+  DNSARecord:    
+    Type: "AWS::Route53::RecordSet"
+    Properties:
+      Comment: !Ref 'AWS::StackName'
+      Name: !Ref CloudFrontCname
+      Type: A
+      HostedZoneName: !Join ['.', [ !Select [1, !Split ['.', !Ref CloudFrontCname]], !Select [2, !Split ['.', !Ref CloudFrontCname]], '']]
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !GetAtt CloudFront.DomainName
+  DNSAAAARecord:    
+    Type: "AWS::Route53::RecordSet"
+    Properties:
+      Comment: !Ref 'AWS::StackName'
+      Name: !Ref CloudFrontCname
+      Type: AAAA
+      HostedZoneName: !Join ['.', [ !Select [1, !Split ['.', !Ref CloudFrontCname]], !Select [2, !Split ['.', !Ref CloudFrontCname]], '']]
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !GetAtt CloudFront.DomainName
+
+####END Cloudfront and DNS stuff  
+
+Outputs:
+  CloudFront:
+    Description: CloudFront ID
+    Value: !Ref CloudFront
+  CloudFrontDomainName:
+    Description: CloudFront Domain Name
+    Value: !GetAtt CloudFront.DomainName
+  CNAME:
+    Description: Custom domain for Cloudfront
+    Value: !Ref DNSARecord
+  APIGatewayInvokeURL:
+    Description: The invocation URL for the API Gateway
+    Value: !Sub [ "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com", { ApiGateway: !Ref ApiGateway } ]
+  Version:
+    Description: ECS Cloudformation template version
+    Value: 1.0.0
